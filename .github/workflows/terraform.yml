@@ -52,3 +52,13 @@ jobs:
       - name: Terraform Destroy
         if: github.event.inputs.action == 'destroy'
         run: terraform destroy -auto-approve -input=false
+
+      # Step 7: Save the state file back to GitHub repository
+      - name: Save Terraform State to GitHub
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase
+          git add terraform.tfstate* || true
+          git commit -m "chore: update terraform state [skip ci]" || echo "No state changes to commit"
+          git push
