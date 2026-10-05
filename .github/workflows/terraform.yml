@@ -21,11 +21,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Step 1: Pull the latest code and saved state from the repository
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # Step 2: Configure AWS login using Secrets
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -33,32 +31,47 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: "us-east-1"
 
-      # Step 3: Setup Terraform CLI
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.7.0"
 
-      # Step 4: Initialize Terraform
       - name: Terraform Init
         run: terraform init
 
-      # Step 5: Run Apply (when you choose 'apply')
+      # If running destroy, import the bucket automatically if state is empty
+      - name: Auto-sync State for Destroy
+        if: github.event.inputs.action == 'destroy'
+        run: |
+          # Dynamically extracts the resource name from s3.tf (no hardcoding)
+          RES_TYPE=$(grep -oE 'resource "[^"]+"' s3.tf | head -1 | tr -d '"' | awk '{print $2}')
+          RES_NAME=$(grep -oE 'resource "[^"]+" "[^"]+"' s3.tf | head -1 | tr -d '"' | awk '{print $3}')
+          FULL_ADDR="${RES_TYPE}.${RES_NAME}"
+          echo "Target Resource Address: $FULL_ADDR"
+
+          # Check if state already knows about this resource; if not, import it
+          if ! terraform state list | grep -q "$FULL_ADDR"; then
+            # Find the actual bucket in AWS matching this project
+            BUCKET=$(aws s3api list-buckets --query "Buckets[?contains(Name, 'gitops')].Name" --output text | awk '{print $1}')
+            if [ -n "$BUCKET" ] && [ "$BUCKET" != "None" ]; then
+              echo "Importing existing bucket: $BUCKET into $FULL_ADDR"
+              terraform import "$FULL_ADDR" "$BUCKET" || true
+            fi
+          fi
+
       - name: Terraform Apply
         if: github.event.inputs.action == 'apply'
         run: terraform apply -auto-approve -input=false
 
-      # Step 6: Run Destroy (when you choose 'destroy')
       - name: Terraform Destroy
         if: github.event.inputs.action == 'destroy'
         run: terraform destroy -auto-approve -input=false
 
-      # Step 7: Save the state file back to GitHub repository
       - name: Save Terraform State to GitHub
         run: |
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase
+          git pull --rebase origin gitops-8 || true
           git add terraform.tfstate* || true
-          git commit -m "chore: update terraform state [skip ci]" || echo "No state changes to commit"
-          git push
+          git commit -m "chore: update terraform state [skip ci]" || echo "No changes to commit"
+          git push origin gitops-8 || echo "Push failed or nothing to push"
